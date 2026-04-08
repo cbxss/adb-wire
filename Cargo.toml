@@ -1,6 +1,6 @@
 [package]
 name = "adb-wire"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 description = "Async ADB wire protocol client over TCP."
 license = "MIT"

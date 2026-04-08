@@ -108,6 +108,37 @@ pub async fn host_command(server: SocketAddr, cmd: &str) -> Result<String> {
         .map_err(|e| Error::Protocol(format!("invalid utf-8 in response: {e}")))
 }
 
+/// Connect a TCP/IP device to the ADB server.
+///
+/// Equivalent to `adb connect <addr>`. The `addr` should be `"host:port"`,
+/// e.g. `"192.168.1.100:5555"`.
+///
+/// ```no_run
+/// use adb_wire::{connect_device, DEFAULT_SERVER};
+///
+/// # async fn example() {
+/// connect_device(DEFAULT_SERVER, "192.168.1.100:5555").await.unwrap();
+/// # }
+/// ```
+pub async fn connect_device(server: SocketAddr, addr: &str) -> Result<String> {
+    host_command(server, &format!("host:connect:{addr}")).await
+}
+
+/// Disconnect a TCP/IP device from the ADB server.
+///
+/// Equivalent to `adb disconnect <addr>`.
+///
+/// ```no_run
+/// use adb_wire::{disconnect_device, DEFAULT_SERVER};
+///
+/// # async fn example() {
+/// disconnect_device(DEFAULT_SERVER, "192.168.1.100:5555").await.unwrap();
+/// # }
+/// ```
+pub async fn disconnect_device(server: SocketAddr, addr: &str) -> Result<String> {
+    host_command(server, &format!("host:disconnect:{addr}")).await
+}
+
 /// List connected devices. Returns `(serial, state)` pairs.
 ///
 /// `state` is typically `"device"`, `"offline"`, or `"unauthorized"`.
@@ -480,6 +511,56 @@ impl AdbWire {
         wire::send(&mut stream, &cmd).await?;
         wire::read_okay(&mut stream).await?;
         Ok(())
+    }
+
+    // -- Lifecycle ------------------------------------------------------------
+
+    /// Wait until the device is online.
+    ///
+    /// Blocks until the ADB server reports the device as available.
+    /// Equivalent to `adb -s <serial> wait-for-device`.
+    ///
+    /// ```no_run
+    /// # use adb_wire::AdbWire;
+    /// # async fn example() {
+    /// let adb = AdbWire::new("192.168.1.100:5555");
+    /// adb.wait_for_device().await.unwrap();
+    /// println!("device online");
+    /// # }
+    /// ```
+    pub async fn wait_for_device(&self) -> Result<()> {
+        let mut stream = self.connect_raw().await?;
+        let cmd = format!("host-serial:{}:wait-for-any-device", self.serial);
+        wire::send(&mut stream, &cmd).await?;
+        wire::read_okay(&mut stream).await?;
+        // Server sends a second OKAY when the device reaches the requested state.
+        wire::read_okay(&mut stream).await?;
+        Ok(())
+    }
+
+    /// Wait until the device has finished booting.
+    ///
+    /// Waits for the device to come online, then polls `sys.boot_completed`
+    /// until it reports `1`.
+    ///
+    /// ```no_run
+    /// # use adb_wire::AdbWire;
+    /// # async fn example() {
+    /// let adb = AdbWire::new("emulator-5554");
+    /// adb.wait_for_boot().await.unwrap();
+    /// println!("device booted");
+    /// # }
+    /// ```
+    pub async fn wait_for_boot(&self) -> Result<()> {
+        self.wait_for_device().await?;
+        loop {
+            if let Ok(out) = self.shell("getprop sys.boot_completed").await {
+                if out.stdout_str() == "1" {
+                    return Ok(());
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
     }
 
     // -- Connection internals -------------------------------------------------
